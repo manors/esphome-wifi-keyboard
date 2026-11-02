@@ -167,7 +167,7 @@ esphome-wifi-keyboard/
 <details>
 <summary><b>Q: 充电宝依然会自动关机断电？</b></summary>
 
-充电宝的自动休眠检测电流通常在 50~100mA 左右。若开漏模拟按键的时间不足以激活充电宝，可在 `wifi-keyboard.yaml` 的 `sim_press_power_btn` 中适当延长 `delay`（如调至 300~500ms），或调整定时周期。
+充电宝的自动休眠检测电流通常在 50-100mA 左右。若开漏模拟按键的时间不足以激活充电宝，可在 `wifi-keyboard.yaml` 的 `sim_press_power_btn` 中适当延长 `delay`（如调至 300-500ms），或调整定时周期。
 </details>
 
 ---
