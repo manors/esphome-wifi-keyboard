@@ -268,15 +268,23 @@ binary_sensor:
   - platform: template
     name: Press Ctrl
     id: binary_sensor_ctrl
+    filters:
+      timeout: 60s
   - platform: template
     name: Press Shift
     id: binary_sensor_shift
+    filters:
+      timeout: 60s
   - platform: template
     name: Press Alt
     id: binary_sensor_alt
+    filters:
+      timeout: 60s
   - platform: template
     name: Press Win
     id: binary_sensor_win
+    filters:
+      timeout: 60s
   
 debug:
   
