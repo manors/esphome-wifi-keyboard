@@ -2,6 +2,7 @@
 # Definition: definitions/boards/generic-esp32c6/manifest.yaml
 
 substitutions:
+  fw_version: "0.0.2"
   # 设备在局域网中的 IP 地址（用于快速 OTA 及指定地址，若使用路由器 DHCP 动态分配可注释 wifi 中的 use_address）
   device_ip: 10.0.30.71
   # KeepAlive TCP Ping 探测目标 IP 与端口（如 Home Assistant 服务器 IP 及开放端口）
@@ -16,17 +17,22 @@ esp32:
       CONFIG_PM_ENABLE: "y"
       CONFIG_PM_DFS_INIT_AUTO: "y"
       CONFIG_FREERTOS_USE_TICKLESS_IDLE: "y"
+      CONFIG_GPIO_CTRL_FUNC_IN_IRAM: "y"
+      CONFIG_PM_SLP_IRAM_OPT: "y"
     advanced:
       flash_chip: generic
 
 globals:
-  - id: t_boot_ready
+  - id: boot_at
     type: int
     initial_value: "0"
-  - id: t_wifi_ready
+  - id: wifi_connect_at
     type: int
     initial_value: "0"
-  - id: t_api_ready
+  - id: api_connect_at
+    type: int
+    initial_value: "0"
+  - id: key_event_at
     type: int
     initial_value: "0"
   - id: tx_latency
@@ -34,7 +40,7 @@ globals:
     initial_value: "0"
 
 logger:
-  level: INFO
+  level: DEBUG
 
 wifi:
   use_address: ${device_ip}
@@ -43,15 +49,13 @@ wifi:
   ap:
     ssid: esphome-keyboard
   power_save_mode: HIGH
+  on_disconnect:
+    - lambda: |-
+        id(wifi_connect_at) = millis();
   on_connect:
     - lambda: |-
-        id(t_wifi_ready) = millis();
-        id(sensor_wifi_ready).update();
+        id(sensor_wifi_ready).publish_state(millis() - id(wifi_connect_at));
         id(my_ps2_keyboard)->update_leds(true, true, false);
-
-ota:
-  - platform: esphome
-    encryption: 
 
 api:
   encryption:
@@ -60,13 +64,13 @@ api:
   homeassistant_services: true
   id: api_server
   batch_delay: 0ms
+  on_client_disconnected:
+    - lambda: |
+        id(api_connect_at) = millis();
   on_client_connected:
-    - lambda: |-
-        id(t_api_ready) = millis();
-        id(sensor_api_ready).update();
+    - lambda: |
+        id(sensor_api_ready).publish_state(millis() - id(api_connect_at));
         id(my_ps2_keyboard)->update_leds(true, true, true);
-
-captive_portal:
 
 web_server:
   auth:
@@ -75,12 +79,21 @@ web_server:
     username: admin
   ota: false
 
+ota:
+  - platform: esphome
+    encryption: 
+
+captive_portal:
+
 mdns:
   disabled: true
 
 esphome:
   name: esphome-keyboard-02
   name_add_mac_suffix: false
+  project:
+    name: "esphome.wifi-keyboard"
+    version: ${fw_version}
   includes:
     - wifi_wrap.h
     - <esp_pm.h>
@@ -94,26 +107,26 @@ esphome:
     priority: 250
     then:
       - lambda: |-
-          id(t_boot_ready) = millis();
-          id(sensor_boot_ready).update();
+          id(sensor_boot_ready).publish_state(millis());
           esp_pm_config_t pm_config = {
-            .max_freq_mhz = 40,
-            .min_freq_mhz = 160,
+            .max_freq_mhz = 160,
+            .min_freq_mhz = 40,
             .light_sleep_enable = true
           };
           esp_pm_configure(&pm_config);
 
-          id(my_ps2_keyboard)->add_on_key_event_callback([=](uint8_t scancode, bool is_extended, const char* key_name, const char* action) {
+          id(my_ps2_keyboard)->add_on_key_event_callback([=](const char* action, const char* key_name, uint8_t key_code) {
             if (id(api_server).is_connected()) {
-              bool is_down = strcmp(action, "down") == 0;
+              int now = millis();
+              bool is_active = strcmp(action, "down") == 0 && now - id(key_event_at) < 10000;
               if (strcmp(key_name, "L_CTRL") == 0 || strcmp(key_name, "R_CTRL") == 0)
-                id(binary_sensor_ctrl).publish_state(is_down);
+                id(binary_sensor_ctrl).publish_state(is_active);
               else if (strcmp(key_name, "L_ALT") == 0 || strcmp(key_name, "R_ALT") == 0)
-                id(binary_sensor_alt).publish_state(is_down);
+                id(binary_sensor_alt).publish_state(is_active);
               else if (strcmp(key_name, "L_SHIFT") == 0 || strcmp(key_name, "R_SHIFT") == 0)
-                id(binary_sensor_shift).publish_state(is_down);
+                id(binary_sensor_shift).publish_state(is_active);
               else if (strcmp(key_name, "L_GUI") == 0 || strcmp(key_name, "R_GUI") == 0)
-                id(binary_sensor_win).publish_state(is_down);
+                id(binary_sensor_win).publish_state(is_active);
                 
               bool ctrl = id(binary_sensor_ctrl).state;
               bool alt = id(binary_sensor_alt).state;
@@ -121,8 +134,10 @@ esphome:
               bool win = id(binary_sensor_win).state;
               id(send_key_event).execute(action, key_name, ctrl, alt, shift, win);
               
+              id(key_event_at) = now;
               id(text_sensor_key_name).publish_state(key_name);
               id(text_sensor_key_action).publish_state(action);
+              id(sensor_key_at).publish_state(id(key_event_at));
             }
           });
 
@@ -227,8 +242,6 @@ sensor:
     unit_of_measurement: "ms"
     icon: "mdi:timer-play"
     update_interval: never
-    lambda: |-
-      return id(t_boot_ready);
 
   - platform: template
     name: "Wi-Fi ready"
@@ -237,8 +250,6 @@ sensor:
     unit_of_measurement: "ms"
     icon: "mdi:wifi"
     update_interval: never
-    lambda: |-
-      return id(t_wifi_ready) - id(t_boot_ready);
 
   - platform: template
     name: "API ready"
@@ -247,8 +258,6 @@ sensor:
     unit_of_measurement: "ms"
     icon: "mdi:handshake"
     update_interval: never
-    lambda: |-
-      return id(t_api_ready) - id(t_wifi_ready);
 
   - platform: template
     name: "TX latency"
@@ -258,6 +267,12 @@ sensor:
     accuracy_decimals: 2
     lambda: |-
       return id(tx_latency);
+
+  - platform: template
+    name: Key At
+    id: sensor_key_at
+    unit_of_measurement: "ms"
+    update_interval: never
     
   - platform: uptime
     name: Uptime
@@ -268,23 +283,15 @@ binary_sensor:
   - platform: template
     name: Press Ctrl
     id: binary_sensor_ctrl
-    filters:
-      timeout: 60s
   - platform: template
     name: Press Shift
     id: binary_sensor_shift
-    filters:
-      timeout: 60s
   - platform: template
     name: Press Alt
     id: binary_sensor_alt
-    filters:
-      timeout: 60s
   - platform: template
     name: Press Win
     id: binary_sensor_win
-    filters:
-      timeout: 60s
   
 debug:
   

@@ -232,11 +232,11 @@ namespace ps2
     // 键盘解析状态机
     bool is_release_{false};
     bool is_extended_{false};
-    uint8_t skip_count_{0};
     bool l_ctrl_state_{false};
     bool num_lock_state_{true};
     bool caps_lock_state_{false};
     bool scroll_lock_state_{false};
+    bool wait_first_release_{false};
 
     // 诊断统计收归结构体
     struct Diagnostics
@@ -265,8 +265,8 @@ namespace ps2
     esp_pm_lock_handle_t pm_lock_{nullptr};
     volatile int64_t last_activity_time_{0};
     volatile bool is_pm_locked_{false};
+    volatile bool is_turn_off_leds{false};
     volatile bool is_sleeping_{false};
-    volatile bool is_sleep_ready_{false};
 
     // 引脚电平超时轮询
     inline bool wait_pin_level(gpio_num_t pin, int level, uint32_t timeout_us)
@@ -376,7 +376,7 @@ namespace ps2
       {
         self->is_sleeping_ = false;
         // gpio_set_level(self->clk_pin_, 0);
-        self->config_gpio_for_wakeup();
+        // self->config_gpio_for_wakeup();
         self->diag_.wakeups++;
         return;
       }
@@ -423,6 +423,27 @@ namespace ps2
       }
     }
 
+    void handle_key_event(const char *action, const char *key_name, uint8_t key_code)
+    {
+      switch (str2int(key_name))
+      {
+      case str2int("NUM_LOCK"):
+        if (strcmp(action, "down"))
+          update_leds(!num_lock_state_, caps_lock_state_, scroll_lock_state_);
+        break;
+      case str2int("CAPS_LOCK"):
+        if (strcmp(action, "down"))
+          update_leds(num_lock_state_, !caps_lock_state_, scroll_lock_state_);
+        break;
+      case str2int("SCROLL_LOCK"):
+        if (strcmp(action, "down"))
+          update_leds(num_lock_state_, caps_lock_state_, !scroll_lock_state_);
+        break;
+      }
+      on_key_event_callback.call(action, key_name, key_code);
+      ESP_LOGI(TAG, "[Event] Action: %-4s Name: %-10s Code: 0x%02X", action, key_name, key_code);
+    }
+
     void process_scancode(uint8_t code)
     {
       switch (code)
@@ -458,7 +479,6 @@ namespace ps2
         // 过滤 Extended Fake Shift (0xE0 0x12 / 0xE0 0x59)
         if (!is_extended_ || (code != 0x12 && code != 0x59))
         {
-
           const char *action = is_release_ ? "up" : "down";
           const char *key_name = scancode_to_name(code, is_extended_);
 
@@ -470,24 +490,17 @@ namespace ps2
           }
           l_ctrl_state_ = code == 0x14;
 
-          switch (str2int(key_name))
+          // 刚唤醒时会收到不完整的按键序列，此时忽略输入
+          if (!wait_first_release_ || is_release_)
           {
-          case str2int("NUM_LOCK"):
-            if (!is_release_)
-              update_leds(!num_lock_state_, caps_lock_state_, scroll_lock_state_);
-            break;
-          case str2int("CAPS_LOCK"):
-            if (!is_release_)
-              update_leds(num_lock_state_, !caps_lock_state_, scroll_lock_state_);
-            break;
-          case str2int("SCROLL_LOCK"):
-            if (!is_release_)
-              update_leds(num_lock_state_, caps_lock_state_, !scroll_lock_state_);
-            break;
+            //补发因睡眠错过的key down事件
+            if (wait_first_release_) {
+              wait_first_release_ = false;
+              handle_key_event("down", key_name, code);
+            }
+
+            handle_key_event(action, key_name, code);
           }
-          on_key_event_callback.call(code, is_extended_, key_name, action);
-          ESP_LOGI(TAG, "[Event] Action: %-4s Key: %-10s Code: 0x%02X Extended: %s",
-                   action, key_name, code, is_extended_ ? "true" : "false");
         }
         is_release_ = false;
         is_extended_ = false;
@@ -511,7 +524,7 @@ namespace ps2
     }
 
   public:
-    esphome::CallbackManager<void(uint8_t, bool, const char *, const char *)> on_key_event_callback;
+    esphome::CallbackManager<void(const char *, const char *, uint8_t)> on_key_event_callback;
 
     PS2KeyboardComponent(uint8_t clk_pin, uint8_t data_pin)
         : clk_pin_(static_cast<gpio_num_t>(clk_pin)),
@@ -538,10 +551,14 @@ namespace ps2
       gpio_config(&io_conf);
       gpio_set_level(clk_pin_, 1);
 
+      // 配置 CLS 引脚 低电平唤醒
+      esp_sleep_enable_gpio_wakeup();
+      gpio_wakeup_enable(clk_pin_, GPIO_INTR_LOW_LEVEL);
+
       // 注册 ISR，传入 this 指针
+      gpio_set_intr_type(clk_pin_, GPIO_INTR_NEGEDGE);
       gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
       gpio_isr_handler_add(clk_pin_, isr_clock_handler, this);
-      gpio_set_intr_type(clk_pin_, GPIO_INTR_NEGEDGE);
 
       // 恢复键盘状态
       send_reset();
@@ -576,8 +593,8 @@ namespace ps2
       }
       else if (led_state_ != LedState::IDLE && byte_queue_.empty() && check_idle(1000000))
       {
-        sync_leds();
-        ESP_LOGD(TAG, "[LedState] Timeout, restart...");
+        sync_leds(is_turn_off_leds);
+        ESP_LOGI(TAG, "[LedState] Timeout, restart...");
       }
 
       // 消费接收队列
@@ -589,17 +606,18 @@ namespace ps2
       }
 
       // 电源管理逻辑
-      if (!is_sleep_ready_ && is_pm_locked_ && check_idle(60000000))
+      if (!is_turn_off_leds && is_pm_locked_ && check_idle(60000000))
       {
         sync_leds(true);
-        is_sleep_ready_ = true;
+        is_turn_off_leds = true;
         ESP_LOGI(TAG, "Keyboard idle: Turn off LEDs");
       }
-      else if (is_sleep_ready_ && is_pm_locked_ && check_idle(3000000))
+      else if (is_turn_off_leds && is_pm_locked_ && check_idle(3000000))
       {
-        is_sleep_ready_ = false;
-        config_gpio_for_sleep();
+        is_turn_off_leds = false;
+        // config_gpio_for_sleep();
         is_sleeping_ = true;
+        wait_first_release_ = true;
 
         esp_pm_lock_release(pm_lock_);
         is_pm_locked_ = false;
@@ -614,7 +632,7 @@ namespace ps2
       if (!is_pm_locked_ && is_sleeping_)
       {
         is_sleeping_ = false;
-        config_gpio_for_wakeup();
+        // config_gpio_for_wakeup();
         is_pm_locked_ = true;
         esp_pm_lock_acquire(pm_lock_);
       }
@@ -631,7 +649,7 @@ namespace ps2
       sync_leds();
     }
 
-    void add_on_key_event_callback(std::function<void(uint8_t, bool, const char *, const char *)> callback)
+    void add_on_key_event_callback(std::function<void(const char *, const char *, uint8_t)> callback)
     {
       on_key_event_callback.add(std::move(callback));
     }
