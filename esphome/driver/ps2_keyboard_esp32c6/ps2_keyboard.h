@@ -581,20 +581,23 @@ namespace ps2
       // LED 同步
       if (led_state_ == LedState::PENDING && byte_queue_.empty() && check_idle(50000))
       {
-        bool result = send_set_leds();
         led_state_ = LedState::SENT_CMD;
+        bool result = send_set_leds();
         ESP_LOGD(TAG, "[LedState] PENDING -> SENT_CMD: %d", result);
       }
       else if (led_state_ == LedState::GOT_CMD_ACK && byte_queue_.empty() && check_idle(50000))
       {
-        bool result = send_set_leds_mask();
         led_state_ = LedState::SENT_DATA;
-        ESP_LOGD(TAG, "[LedState] GOT_CMD_ACK -> SENT_DATA: %d", result);
+        bool result = send_set_leds_mask();
+        bool num_lock = (led_mask_ & 0x02) != 0;
+        bool caps_lock = (led_mask_ & 0x04) != 0;
+        bool scroll_lock = (led_mask_ & 0x01) != 0;
+        ESP_LOGD(TAG, "[LedState] GOT_CMD_ACK -> SENT_DATA: N%d C%d S%d", num_lock, caps_lock, scroll_lock);
       }
       else if (led_state_ != LedState::IDLE && byte_queue_.empty() && check_idle(1000000))
       {
+        ESP_LOGI(TAG, "[LedState] Timeout, retry...");
         sync_leds(is_turn_off_leds);
-        ESP_LOGI(TAG, "[LedState] Timeout, restart...");
       }
 
       // 消费接收队列

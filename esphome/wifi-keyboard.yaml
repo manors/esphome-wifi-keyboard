@@ -2,12 +2,12 @@
 # Definition: definitions/boards/generic-esp32c6/manifest.yaml
 
 substitutions:
-  fw_version: "0.0.2"
-  # 设备在局域网中的 IP 地址（用于快速 OTA 及指定地址，若使用路由器 DHCP 动态分配可注释 wifi 中的 use_address）
+  ps2_clk_pin: 5
+  ps2_data_pin: 4
+  power_bank_pin: 6
+  fw_version: "0.0.3"
+  # Disable mDNS to save power; specify the device IP address here.
   device_ip: 10.0.30.71
-  # KeepAlive TCP Ping 探测目标 IP 与端口（如 Home Assistant 服务器 IP 及开放端口）
-  ping_target_ip: "10.0.0.6"
-  ping_target_port: "8123"
 
 esp32:
   variant: esp32c6
@@ -35,9 +35,6 @@ globals:
   - id: key_event_at
     type: int
     initial_value: "0"
-  - id: tx_latency
-    type: float
-    initial_value: "0"
 
 logger:
   level: DEBUG
@@ -61,6 +58,7 @@ api:
   encryption:
     key: !secret api_password
   outgoing_connection:
+    delay: 3s
   homeassistant_services: true
   id: api_server
   batch_delay: 0ms
@@ -97,14 +95,9 @@ esphome:
   includes:
     - wifi_wrap.h
     - <esp_pm.h>
-    - <esp_wifi.h>
-    - <esp_timer.h>
-    - <lwip/sockets.h>
-    - <lwip/inet.h>
   build_flags:
     - "-Wl,--wrap=esp_wifi_set_config"
   on_boot:
-    priority: 250
     then:
       - lambda: |-
           id(sensor_boot_ready).publish_state(millis());
@@ -141,7 +134,6 @@ esphome:
             }
           });
 
-
 external_components:
   - source:
       type: local
@@ -149,40 +141,13 @@ external_components:
 
 ps2_keyboard_esp32c6:
   id: my_ps2_keyboard
-  clk_pin: 5
-  data_pin: 4
-
+  clk_pin: ${ps2_clk_pin}
+  data_pin: ${ps2_data_pin}
+  
 interval:
-  - interval: 10000ms
+  - interval: 10s
     then:
-      - button.press: sim_press_power_btn
-      - lambda: |-
-          int64_t t_start = esp_timer_get_time();
-          int sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-          if (sock >= 0) {
-            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-            
-            struct sockaddr_in ha_addr;
-            const char *ip = "${ping_target_ip}";
-            const int port = ${ping_target_port};
-            ha_addr.sin_addr.s_addr = inet_addr(ip);
-            ha_addr.sin_family = AF_INET;
-            ha_addr.sin_port = htons(port);
-            
-            int err = connect(sock, (struct sockaddr *)&ha_addr, sizeof(ha_addr));
-            int64_t t_end = esp_timer_get_time();
-            close(sock);
-            
-            if (err == 0) {
-              float rtt_ms = (t_end - t_start) / 1000.0f;
-              id(tx_latency) = rtt_ms;
-              ESP_LOGI("KeepAlive", "TCP Ping %s:%d -> %.2f ms", ip, port, rtt_ms);
-            } else {
-              ESP_LOGW("KeepAlive", "TCP Ping %s:%d -> (errno=%d)", ip, port, errno);
-            }
-          }
+      - button.press: press_power_btn
 
 script:
   - id: send_key_event
@@ -208,11 +173,11 @@ script:
 output:
   - platform: gpio
     pin:
-      number: GPIO6
+      number: ${power_bank_pin}
       mode:
         output: true
         open_drain: true
-    id: power_trigger_pin
+    id: power_bank_pin
     inverted: true
     
 button:
@@ -221,22 +186,28 @@ button:
     id: button_restart
     icon: "mdi:restart"
   - platform: template
-    name: "Power Button"
-    id: sim_press_power_btn
+    name: Power Button
+    id: press_power_btn
+    icon: "mdi:power"
     on_press:
-      - output.turn_on: power_trigger_pin
-      - delay: 200ms
-      - output.turn_off: power_trigger_pin
+      - logger.log:
+          level: DEBUG
+          format: Press power bank button
+      - output.turn_on: power_bank_pin
+      - lambda: gpio_hold_en(static_cast<gpio_num_t>(${power_bank_pin}));
+      - delay: 32ms
+      - lambda: gpio_hold_dis(static_cast<gpio_num_t>(${power_bank_pin}));
+      - output.turn_off: power_bank_pin
   
 sensor:
   - platform: adc
     pin: GPIO0
-    name: "Battery Voltage"
+    name: Battery Voltage
     attenuation: 12db
     filters:
       - multiply: 2.0
   - platform: template
-    name: "Boot ready"
+    name: Boot ready
     id: sensor_boot_ready
     entity_category: diagnostic
     unit_of_measurement: "ms"
@@ -244,7 +215,7 @@ sensor:
     update_interval: never
 
   - platform: template
-    name: "Wi-Fi ready"
+    name: Wi-Fi ready
     id: sensor_wifi_ready
     entity_category: diagnostic
     unit_of_measurement: "ms"
@@ -252,21 +223,12 @@ sensor:
     update_interval: never
 
   - platform: template
-    name: "API ready"
+    name: API ready
     id: sensor_api_ready
     entity_category: diagnostic
     unit_of_measurement: "ms"
     icon: "mdi:handshake"
     update_interval: never
-
-  - platform: template
-    name: "TX latency"
-    id: sensor_tx_latency
-    entity_category: diagnostic
-    unit_of_measurement: "ms"
-    accuracy_decimals: 2
-    lambda: |-
-      return id(tx_latency);
 
   - platform: template
     name: Key At
