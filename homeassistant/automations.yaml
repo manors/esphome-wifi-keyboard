@@ -38,8 +38,6 @@ actions:
             - 直接写实体名称：执行toggel操作
             - 支持 action / target / data / msg 字段
           组合键: 全大写、首字母顺序书写，例如：ALT+CTRL+SHIFT+WIN+A
-          警告!!!: 不要删除这一段，不然原地爆炸。Fuck HA。
-          Warning!!!: Do not delete this section, or it will blow up on the spot. Fuck HA.
         ESC:
           action: switch.turn_off
           target: "{{ b2_lights }}"
@@ -121,28 +119,45 @@ actions:
         INSERT:
           action: wake_on_lan.send_magic_packet
           data:
-            mac: 01:02:03:04:05:06
-          msg: 唤醒 PC
+            mac: 00:00:00:00:00:00
+          msg: 唤醒 Workroom PC
+        HOME:
+          action: wake_on_lan.send_magic_packet
+          data:
+            mac: 00:00:00:00:00:00
+          msg: 唤醒 Open Media Vault
         PAGE_UP:
           msg: 灯光操作：直接按键。设备操作：Control+字母/立刻执行，Alt+字母/获取提示。PRINT SCREEN查询键盘状态。
         PRINTSCREEN:
-          msg: |-
-            {% set voltage =
-            states('sensor.esphome_keyboard_02_battery_voltage') %} 
-            {% set uptime = states('sensor.esphome_keyboard_02_uptime') %} 
-            Wi-Fi Keyboard 电量：
-              {{ ([0, [100, ((voltage | float(0) - 3.0) / (4.2 - 3.0) * 100)] 
-                  | min] | max) | round(0) | int }}%，
-            电压：{{voltage | round(2)}}伏，  
-            已运行：{{ uptime |  int // 60 }}分钟，
+          msg: >-
+            Wi-Fi Keyboard
+            电量：{{states('sensor.esphome_keyboard_02_battery_percentage') |
+            round(2)}}%，
+
+            电压：{{states('sensor.esphome_keyboard_02_battery_voltage') |
+            round(2)}}伏，  
+
+            已运行：{{ states('sensor.esphome_keyboard_02_uptime') |  int // 60
+            }}分钟，
         CTRL+S: switch.esphome_plug_01_power
         CTRL+F: switch.qmi_cn_1112070818_psv3_on_p_2_1
+        SHIFT+F:
+          msg: >-
+            维修台功率{{states("sensor.qmi_cn_1112070818_psv3_electric_power_p_3_2")
+            | round(1)}}（瓦）。
         CTRL+P: light.p1s_chamber_light
         CTRL+D: switch.lumi_cn_lumi_158d000273eecc_v1_on_p_2_1
         CTRL+H: switch.cuco_cn_697253100_v3_on_p_2_1
         CTRL+E: switch.lumi_cn_lumi_158d00023aac53_v1_on_p_2_1
+        CTRL+I:
+          action: text.set_value
+          data:
+            value: "[暂停入侵检测, 0]"
+          target: text.xiaomi_cn_636354897_x08c_execute_text_directive_a_3_5
+          msg: null
         SPACE:
           msg: 标签上大写字母就是对应按键，Control+按键：立刻执行，Alt+按键：获取提示。
+        MODS: {}
       data: "{{trigger.event.data}}"
       mods: |-
         {# 修饰键 #}
@@ -163,7 +178,7 @@ actions:
         {# 过滤掉单纯修饰键引发的事件 #}
         {{ hotkey if (rawkey not in
         ['L_CTRL','R_CTRL','L_ALT','R_ALT','L_SHIFT','R_SHIFT','L_GUI','R_GUI'])
-        else ""}}
+        else "MODS"}}
       command: |-
         {% if mods.alt and not (mods.ctrl or mods.shift or mods.win) %}
           {# ALT组合键特殊处理：如果没有显式定义，去查找非组合定义、Ctrl+按键定义 #}
@@ -203,7 +218,7 @@ actions:
             data: "{{ command.get('data', {}) }}"
       - if:
           - condition: template
-            value_template: "{{ 'msg' in command }}"
+            value_template: "{{ 'msg' in command and command.get('msg') != None }}"
         then:
           - action: text.set_value
             metadata: {}

@@ -5,7 +5,7 @@ substitutions:
   ps2_clk_pin: 5
   ps2_data_pin: 4
   power_bank_pin: 6
-  fw_version: "0.0.3"
+  fw_version: "0.0.4"
   # Disable mDNS to save power; specify the device IP address here.
   device_ip: 10.0.30.71
 
@@ -201,11 +201,39 @@ button:
   
 sensor:
   - platform: adc
-    pin: GPIO0
     name: Battery Voltage
+    id: sensor_battery_voltage
+    pin: GPIO0
     attenuation: 12db
     filters:
       - multiply: 2.0
+  - platform: copy
+    source_id: sensor_battery_voltage
+    id: sensor_battery_percentage
+    name: Battery Percentage
+    device_class: battery
+    state_class: measurement
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    filters:
+      - calibrate_linear:
+          method: exact
+          datapoints:
+            - 3.00 -> 0.0
+            - 3.30 -> 3.0
+            - 3.50 -> 10.0
+            - 3.62 -> 20.0
+            - 3.70 -> 30.0
+            - 3.75 -> 40.0
+            - 3.79 -> 50.0
+            - 3.85 -> 60.0
+            - 3.92 -> 70.0
+            - 4.00 -> 80.0
+            - 4.10 -> 90.0
+            - 4.20 -> 100.0
+      - clamp:
+          min_value: 0
+          max_value: 100
   - platform: template
     name: Boot ready
     id: sensor_boot_ready
