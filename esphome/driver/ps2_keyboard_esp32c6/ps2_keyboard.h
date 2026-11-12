@@ -228,6 +228,7 @@ namespace ps2
 
     volatile LedState led_state_{LedState::IDLE};
     volatile uint8_t led_mask_{0};
+    volatile uint8_t led_retry_count_{0};
 
     // 键盘解析状态机
     bool is_release_{false};
@@ -457,6 +458,7 @@ namespace ps2
           break;
         case LedState::SENT_DATA:
           led_state_ = LedState::IDLE;
+          led_retry_count_ = 0;
           ESP_LOGD(TAG, "[LedState] SENT_DATA -> IDLE");
           break;
         default:
@@ -594,9 +596,10 @@ namespace ps2
         bool scroll_lock = (led_mask_ & 0x01) != 0;
         ESP_LOGD(TAG, "[LedState] GOT_CMD_ACK -> SENT_DATA: N%d C%d S%d", num_lock, caps_lock, scroll_lock);
       }
-      else if (led_state_ != LedState::IDLE && byte_queue_.empty() && check_idle(1000000))
+      else if (led_state_ != LedState::IDLE && led_retry_count_ < 10 && byte_queue_.empty() && check_idle(1000000))
       {
         ESP_LOGI(TAG, "[LedState] Timeout, retry...");
+        led_retry_count_++;
         sync_leds(is_turn_off_leds);
       }
 
